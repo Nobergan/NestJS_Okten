@@ -1,0 +1,10 @@
+services:
+  db:
+    image: mysql:8
+    environment:
+      - MYSQL_DATABASE=my-nestjs-test
+      - MYSQL_USER=user
+      - MYSQL_PASSWORD=user
+      - MYSQL_ROOT_PASSWORD=superpass
+    ports:
+      - "3307:3306"

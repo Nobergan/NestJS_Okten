@@ -1,98 +1,253 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# NestJS Tables API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Навчальний проєкт на [NestJS](https://nestjs.com/) — REST API для управління столами з підключенням до MySQL через TypeORM та документацією Swagger.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+---
 
-## Description
+## Що було зроблено
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+### 1. Налаштування проєкту
 
-## Project setup
+- Створено базовий NestJS проєкт за допомогою `nest new`.
+- Видалено стандартні шаблонні файли:
+  - `src/app.controller.ts`
+  - `src/app.controller.spec.ts`
+  - `src/app.service.ts`
+- У `nest-cli.json` додано параметр `generateOptions: { spec: false }` — щоб при генерації нових файлів через CLI автоматично **не створювались** тестові spec-файли.
 
-```bash
-$ npm install
+### 2. Встановлення залежностей
+
+Встановлено наступні пакети:
+
+| Пакет | Призначення |
+|---|---|
+| `@nestjs/typeorm` | Інтеграція TypeORM з NestJS |
+| `typeorm` | ORM для роботи з базою даних |
+| `mysql2` | Драйвер для підключення до MySQL |
+| `@nestjs/swagger` | Генерація Swagger/OpenAPI документації |
+| `swagger-ui-express` | UI для Swagger в Express |
+| `@nestjs/mapped-types` | Утиліти для DTO (наприклад, `PartialType`) |
+| `class-validator` | Декоратори для валідації вхідних даних |
+| `class-transformer` | Декоратори для трансформації об'єктів |
+
+### 3. Docker — запуск MySQL
+
+Створено файл `docker-compose.yml` для запуску MySQL 8 в контейнері:
+
+```yaml
+services:
+  db:
+    image: mysql:8
+    environment:
+      - MYSQL_DATABASE=my-nestjs-test
+      - MYSQL_USER=user
+      - MYSQL_PASSWORD=user
+      - MYSQL_ROOT_PASSWORD=superpass
+    ports:
+      - "3307:3306"
 ```
 
-## Compile and run the project
+- База даних: `my-nestjs-test`
+- Користувач: `user` / пароль: `user`
+- Зовнішній порт: `3307` (щоб не конфліктувати з локальним MySQL на `3306`)
 
-```bash
-# development
-$ npm run start
+### 4. Підключення до бази даних — `TypeormModule`
 
-# watch mode
-$ npm run start:dev
+Створено `src/typeorm.module.ts` — окремий NestJS модуль з налаштуванням TypeORM:
 
-# production mode
-$ npm run start:prod
+- Тип БД: `mysql`
+- Хост: `localhost`, порт: `3307`
+- Параметр `synchronize: true` — TypeORM автоматично синхронізує схему БД з ентіті (зручно для розробки)
+- Ентіті шукаються за шляхом: `**/*.entity{.ts,.js}`
+
+### 5. Модуль Tables
+
+Згенеровано та реалізовано повноцінний CRUD модуль `src/tables/`:
+
+#### Ентіті — `table.entity.ts`
+TypeORM ентіті з полями:
+
+| Поле | Тип | Опис |
+|---|---|---|
+| `id` | `number` | Первинний ключ (auto-increment) |
+| `type` | `string` | Тип столу (наприклад, "wood") |
+| `width` | `number` | Ширина |
+| `height` | `number` | Висота |
+| `inStock` | `boolean` | Наявність в наявності (за замовчуванням `true`) |
+
+#### DTO файли
+
+- **`create-table.dto.ts`** — DTO для створення столу. Містить валідацію через `class-validator`:
+  - `type`: рядок, від 2 до 255 символів
+  - `width`, `height`: числа від 10 до 1 000 000
+  - `inStock`: необов'язкове поле
+- **`update-table.dto.ts`** — DTO для оновлення. Розширює `CreateTableDto` через `PartialType` — всі поля стають необов'язковими.
+- **`response-table.dto.ts`** — DTO для відповіді API зі Swagger-декораторами `@ApiProperty`.
+
+#### Сервіс — `tables.service.ts`
+Реалізовано методи через TypeORM Repository:
+- `create(dto)` — створення нового запису
+- `findAll()` — отримання всіх записів
+- `findById(id)` — пошук за ID (якщо не знайдено — кидає `NotFoundException`)
+- `update(id, dto)` — оновлення запису
+- `delete(id)` — видалення запису
+
+#### Контролер — `tables.controller.ts`
+REST-контролер з маршрутами:
+
+| Метод | URL | Дія |
+|---|---|---|
+| `POST` | `/tables` | Створити новий стіл |
+| `GET` | `/tables` | Отримати всі столи |
+| `GET` | `/tables/:id` | Отримати стіл за ID |
+| `PATCH` | `/tables/:id` | Оновити стіл |
+| `DELETE` | `/tables/:id` | Видалити стіл |
+
+### 6. Налаштування `main.ts`
+
+- Підключено **глобальний `ValidationPipe`** з опцією `transform: true` — автоматично валідує вхідні дані та перетворює типи.
+- Налаштовано **Swagger**:
+  - Назва: `Table API`
+  - Опис: `API for tables sell`
+  - Версія: `1.0.0`
+  - Тег: `Tables`
+  - Доступний за адресою: `http://localhost:3001/docs`
+- Порт змінено з `3000` на **`3001`**.
+
+### 7. `AppModule`
+
+Видалено стандартні `AppController` та `AppService`. Підключено:
+- `TablesModule`
+- `TypeormModule`
+
+---
+
+## Структура проєкту
+
+```
+src/
+├── app.module.ts              # Головний модуль
+├── main.ts                    # Точка входу (bootstrap, Swagger, ValidationPipe)
+├── typeorm.module.ts          # Налаштування підключення до MySQL
+└── tables/
+    ├── tables.module.ts       # Модуль Tables
+    ├── tables.controller.ts   # REST-контролер
+    ├── tables.service.ts      # Бізнес-логіка + робота з БД
+    ├── entities/
+    │   └── table.entity.ts    # TypeORM ентіті
+    └── dto/
+        ├── create-table.dto.ts
+        ├── update-table.dto.ts
+        └── response-table.dto.ts
 ```
 
-## Run tests
+---
+
+## Команди в терміналі
+
+### Встановлення залежностей
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm install
 ```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+Встановлює всі залежності з `package.json`.
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm install @nestjs/typeorm typeorm mysql2 @nestjs/swagger swagger-ui-express @nestjs/mapped-types class-validator class-transformer
 ```
+Встановлює нові пакети для роботи з базою даних, Swagger та валідацією.
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+### Генерація модуля через NestJS CLI
 
-## Resources
+```bash
+nest generate module tables
+# або скорочено
+nest g module tables
+```
+Генерує файл `src/tables/tables.module.ts`.
 
-Check out a few resources that may come in handy when working with NestJS:
+```bash
+nest generate controller tables
+# або скорочено
+nest g controller tables
+```
+Генерує файл `src/tables/tables.controller.ts`.
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```bash
+nest generate service tables
+# або скорочено
+nest g service tables
+```
+Генерує файл `src/tables/tables.service.ts`.
 
-## Support
+> Завдяки налаштуванню `"spec": false` в `nest-cli.json` — тестові файли (`*.spec.ts`) **не генеруються** автоматично.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+### Docker — запуск бази даних
 
-## Stay in touch
+```bash
+docker compose up -d
+```
+Запускає MySQL контейнер у фоновому режимі (`-d` = detached). Після цього база даних доступна на `localhost:3307`.
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+```bash
+docker compose down
+```
+Зупиняє та видаляє контейнери.
 
-## License
+```bash
+docker ps
+```
+Перевірити, які контейнери зараз запущені.
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+### Запуск застосунку
+
+```bash
+npm run start:dev
+```
+Запускає NestJS у режимі розробки з watch (автоперезавантаження при змінах файлів).
+
+```bash
+npm run start
+```
+Запускає NestJS у звичайному режимі.
+
+```bash
+npm run build
+```
+Компілює TypeScript у JavaScript (в папку `dist/`).
+
+---
+
+## Запуск проєкту
+
+1. Запустити MySQL через Docker:
+   ```bash
+   docker compose up -d
+   ```
+
+2. Встановити залежності:
+   ```bash
+   npm install
+   ```
+
+3. Запустити сервер:
+   ```bash
+   npm run start:dev
+   ```
+
+4. Відкрити Swagger UI:
+   ```
+   http://localhost:3001/docs
+   ```
+
+---
+
+## Технології
+
+- [NestJS](https://nestjs.com/) — Node.js фреймворк
+- [TypeORM](https://typeorm.io/) — ORM для TypeScript
+- [MySQL](https://www.mysql.com/) — реляційна база даних
+- [Docker](https://www.docker.com/) — контейнеризація
+- [Swagger](https://swagger.io/) — документація API
+- [class-validator](https://github.com/typestack/class-validator) — валідація
+- [class-transformer](https://github.com/typestack/class-transformer) — трансформація
