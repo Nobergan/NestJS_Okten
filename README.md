@@ -1,199 +1,212 @@
-# NestJS — Авторизація через JWT
+# NestJS — JWT авторизація з refresh/logout та зберіганням токенів у БД
 
-## Що було зроблено
+## Що було зроблено в цій гілці
 
-### Встановлення залежностей
+- **Додано повноцінну підтримку пари access/refresh токенів**
+- **Додано сутність `Token` та звʼязок `User` ⇄ `Token` у БД**
+- **Реалізовано маршрути `POST /auth/refresh` та `POST /auth/logout`**
+- **JWT-стратегія тепер перевіряє токен по `jti` у таблиці `Token` і враховує блокування**
+- **Час життя токенів керується через змінні оточення, а не через конфіг `JwtModule`**
+
+---
+
+## Встановлені залежності
 
 ```bash
 npm install @nestjs/config @nestjs/jwt @nestjs/passport passport passport-jwt bcrypt
 npm install -D @types/passport-jwt @types/bcrypt
 ```
 
-| Пакет | Призначення |
-|---|---|
-| `@nestjs/config` | Зчитування змінних оточення з файлу `.env` |
-| `@nestjs/jwt` | Генерація та верифікація JWT-токенів |
-| `@nestjs/passport` | Інтеграція бібліотеки Passport.js з NestJS |
-| `passport` | Middleware для автентифікації (peer dependency) |
-| `passport-jwt` | Стратегія Passport для перевірки JWT з заголовка `Authorization` |
-| `bcrypt` | Хешування та порівняння паролів |
-| `@types/passport-jwt` | TypeScript-типи для `passport-jwt` |
-| `@types/bcrypt` | TypeScript-типи для `bcrypt` |
+- **`@nestjs/config`**: робота зі змінними оточення, `.env`
+- **`@nestjs/jwt`**: створення та верифікація JWT
+- **`@nestjs/passport` / `passport` / `passport-jwt`**: інтеграція Passport + JWT стратегія
+- **`bcrypt`**: хешування паролів
+- **`@types/*`**: typings для TypeScript
 
 ---
 
-## Структура модуля авторизації
+## Структура модуля авторизації (оновлена)
 
-```
+```text
 src/
-├── app.module.ts                          ← підключено ConfigModule та AuthModule
+├── app.module.ts
 ├── auth/
-│   ├── auth.controller.ts                 ← маршрути: register, login, profile
-│   ├── auth.module.ts                     ← конфігурація JwtModule, PassportModule
-│   ├── auth.service.ts                    ← бізнес-логіка реєстрації та входу
-│   ├── jwt.strategy.ts                    ← Passport JWT-стратегія
+│   ├── auth.controller.ts                 ← маршрути: register, login, profile, refresh, logout
+│   ├── auth.module.ts                     ← JwtModule без expiresIn, репозиторії User + Token
+│   ├── auth.service.ts                    ← робота з access/refresh токенами, logout
+│   ├── jwt.strategy.ts                    ← перевірка токена по jti в БД
 │   ├── dto/
-│   │   ├── register.dto.ts                ← DTO для реєстрації
-│   │   └── login.dto.ts                   ← DTO для входу
-│   └── entities/
-│       └── user.entity.ts                 ← TypeORM-сутність користувача
+│   │   ├── register.dto.ts
+│   │   ├── login.dto.ts
+│   │   └── refresh-token.dto.ts           ← DTO для refresh/logout
+│   ├── entities/
+│   │   ├── user.entity.ts                 ← User + звʼязок one-to-many з Token
+│   │   └── token.entity.ts                ← сутність токенів
+│   └── interfaces/
+│       └── tokens.interface.ts            ← інтерфейс для пари токенів
 └── tables/
     └── interfaces/
-        ├── jwt-payload.interface.ts       ← інтерфейс payload JWT-токена
-        └── user-request.interface.ts      ← розширений Express Request з полем user
+        ├── jwt-payload.interface.ts       ← payload з додатковим полем jti
+        └── user-request.interface.ts
 ```
 
 ---
 
-## Детальний опис змін
-
-### `src/app.module.ts`
-
-Підключено `ConfigModule.forRoot()` (глобальне зчитування `.env`) та `AuthModule`:
-
-```typescript
-imports: [ConfigModule.forRoot(), TablesModule, TypeormModule, AuthModule]
-```
-
----
-
-### `src/auth/entities/user.entity.ts`
-
-TypeORM-сутність `User` з автоматичним хешуванням пароля перед збереженням:
-
-- `@BeforeInsert()` — хешує пароль через `bcrypt.hash(password, 10)` до запису в БД
-- `validatePassword(password)` — порівнює відкритий пароль з хешем через `bcrypt.compare`
-
----
-
-### `src/auth/dto/register.dto.ts` та `login.dto.ts`
-
-DTO для валідації тіла запитів. Обидва містять поля:
-- `username: string`
-- `password: string`
-
-Валідація через `@IsString()` (бібліотека `class-validator`).
-
----
-
-### `src/auth/auth.service.ts`
-
-Сервіс містить два публічні методи:
-
-- **`register(registerDto)`** — створює нового користувача в БД (пароль хешується автоматично через `@BeforeInsert`)
-- **`login(loginDto)`** — перевіряє credentials, повертає `{ access_token: string }`
-- **`validateUser(username, password)`** (приватний) — знаходить користувача в БД та перевіряє пароль. Кидає `UnauthorizedException` при невалідних даних
-
----
-
-### `src/auth/jwt.strategy.ts`
-
-Passport-стратегія для верифікації JWT:
-
-- Витягує токен з заголовка `Authorization: Bearer <token>`
-- Зчитує `JWT_SECRET` з конфігурації через `ConfigService`
-- Метод `validate(payload)` повертає payload, який потрапляє в `req.user`
-
----
-
-### `src/auth/auth.module.ts`
-
-Конфігурація модуля:
-
-- `PassportModule.register({ defaultStrategy: 'jwt' })` — встановлює JWT як стратегію за замовчуванням
-- `JwtModule.registerAsync(...)` — асинхронна конфігурація: зчитує `JWT_SECRET` та `JWT_EXPIRATION_TIME` з `.env` через `ConfigService`
-- `TypeOrmModule.forFeature([User])` — підключає репозиторій `User`
-
----
+## Зміни по файлах
 
 ### `src/auth/auth.controller.ts`
 
-Контролер з базовим шляхом `/auth`:
+- Додано імпорт `RefreshTokenDto`.
+- Додано маршрути:
+  - `POST /auth/refresh` — приймає `refreshToken`, повертає оновлену пару токенів.
+  - `POST /auth/logout` — блокує переданий `refreshToken` у БД (користувач виходить з системи).
 
-| Метод | URL | Опис |
-|---|---|---|
-| `POST` | `/auth/register` | Реєстрація нового користувача |
-| `POST` | `/auth/login` | Вхід, повертає `access_token` |
-| `GET` | `/auth/profile` | Захищений маршрут — повертає дані з JWT payload |
+### `src/auth/auth.module.ts`
 
-Маршрут `/auth/profile` захищений через `@UseGuards(AuthGuard('jwt'))`.
+- `JwtModule.registerAsync` тепер налаштовується тільки з `secret`:
+  - час життя токенів більше НЕ задається тут, а передається при `jwtService.sign(...)` у сервісі.
+- `TypeOrmModule.forFeature([User, Token])` — підключено репозиторій `Token` разом з `User`.
 
----
+### `src/auth/auth.service.ts`
+
+- Додано інʼєкцію:
+  - репозиторію `Token`;
+  - `ConfigService`.
+- Додано приватні поля:
+  - `accessTokenExpiresIn` — читається з `ACCESS_TOKEN_EXPIRATION_TIME`;
+  - `refreshTokenExpiresIn` — читається з `REFRESH_TOKEN_EXPIRATION_TIME`.
+- **Метод `login` тепер повертає `ITokens`**:
+  - генерується випадковий `jti`;
+  - підписуються `accessToken` і `refreshToken` з різними `expiresIn`;
+  - обидва токени зберігаються в таблиці `Token` через приватний метод `saveTokens(...)` разом з датами закінчення, `jti` і користувачем.
+- **Новий метод `refresh`**:
+  - читає `refreshToken` з `RefreshTokenDto`;
+  - валідує JWT через `jwtService.verify<IJWTPayload>(refreshToken)`;
+  - шукає в БД запис `Token` з цим refresh-токеном, `isBlocked = false` та повʼязаним користувачем;
+  - перевіряє, чи `refreshTokenExpiresAt` ще не минув;
+  - блокує старий запис (`isBlocked = true`);
+  - генерує нову пару access/refresh з новим `jti`, зберігає їх у БД та повертає.
+- **Новий метод `logOut`**:
+  - шукає запис `Token` по значенню `refreshToken`;
+  - якщо знайшов — ставить `isBlocked = true` і зберігає, таким чином розлогінюючи сесію.
+
+### `src/auth/dto/refresh-token.dto.ts`
+
+- Новий DTO для refresh/logout:
+
+```typescript
+export class RefreshTokenDto {
+  @IsString()
+  refreshToken: string;
+}
+```
+
+### `src/auth/entities/token.entity.ts`
+
+- Нова сутність `Token` з полями:
+  - `accessToken: string`;
+  - `refreshToken: string`;
+  - `accessTokenExpiresAt: Date`;
+  - `refreshTokenExpiresAt: Date`;
+  - `isBlocked: boolean` (default `false`);
+  - `jti: string`;
+  - `user: User` — звʼязок `ManyToOne` на користувача.
+
+### `src/auth/entities/user.entity.ts`
+
+- До існуючої логіки (хешування пароля через `@BeforeInsert` і `validatePassword`) додано:
+
+```typescript
+@OneToMany(() => Token, (token) => token.user)
+tokens: Token[];
+```
+
+Це дозволяє зберігати і переглядати всі токени, видані користувачу.
+
+### `src/auth/interfaces/tokens.interface.ts`
+
+- Новий інтерфейс результату логіну/refresh:
+
+```typescript
+export interface ITokens {
+  accessToken: string;
+  refreshToken: string;
+}
+```
+
+### `src/auth/jwt.strategy.ts`
+
+- Додано інʼєкцію репозиторію `Token`.
+- У методі `validate`:
+  - по `payload.jti` шукається запис у таблиці `Token` з `isBlocked = false`;
+  - якщо запис не знайдено — кидається `UnauthorizedException('Token is blocked or invalid')`;
+  - при успіху повертається payload (користувач вважається авторизованим).
+
+Таким чином, якщо токен заблокований (logout/refresh), запити з ним більше не пройдуть перевірку в стратегії.
 
 ### `src/tables/interfaces/jwt-payload.interface.ts`
 
-Інтерфейс для JWT payload:
+- Оновлений payload JWT тепер має вигляд:
 
 ```typescript
 export interface IJWTPayload {
   userId: number;
   username: string;
+  jti: string;
 }
 ```
-
----
-
-### `src/tables/interfaces/user-request.interface.ts`
-
-Розширений інтерфейс Express `Request` з полем `user` типу `IJWTPayload`:
-
-```typescript
-export interface UserRequest extends Request {
-  user: IJWTPayload;
-}
-```
-
-Використовується у захищених маршрутах для типізованого доступу до `req.user`.
 
 ---
 
 ## Змінні оточення (`.env`)
 
-Файл `.env` у корені проєкту:
+Актуальний мінімальний набір для авторизації:
 
 ```env
 JWT_SECRET=<ваш_секретний_ключ>
-JWT_EXPIRATION_TIME=3600
+ACCESS_TOKEN_EXPIRATION_TIME=900          # 15 хвилин, приклад
+REFRESH_TOKEN_EXPIRATION_TIME=2592000     # 30 днів, приклад
 ```
 
-| Змінна | Призначення |
-|---|---|
-| `JWT_SECRET` | Секрет для підпису JWT (рядок) |
-| `JWT_EXPIRATION_TIME` | Час життя токена в секундах (наприклад `3600` = 1 година) |
+- **`JWT_SECRET`** — секрет для підпису JWT.
+- **`ACCESS_TOKEN_EXPIRATION_TIME`** — час життя access-токена в секундах.
+- **`REFRESH_TOKEN_EXPIRATION_TIME`** — час життя refresh-токена в секундах.
 
 ---
 
-## Запуск проєкту
+## Команди, які використовуються в проєкті
 
-### 1. Запустити базу даних MySQL через Docker
+### База даних (MySQL через Docker)
 
 ```bash
 docker-compose up -d
 ```
 
-Піднімає контейнер MySQL 8 з такими параметрами:
-- БД: `my-nestjs-test`
-- Користувач: `user` / `user`
-- Root-пароль: `superpass`
-- Порт: `3307:3306`
+- Підіймає контейнер MySQL 8 у фоні з параметрами:
+  - БД: `my-nestjs-test`;
+  - користувач: `user` / пароль `user`;
+  - root-пароль: `superpass`;
+  - порт: `3307:3306`.
 
-### 2. Встановити залежності
+### Встановлення залежностей
 
 ```bash
 npm install
 ```
 
-### 3. Запустити додаток у режимі розробки
+- Встановлює всі npm-залежності проєкту.
+
+### Запуск застосунку в режимі розробки
 
 ```bash
 npm run start:dev
 ```
 
----
+- Запускає NestJS-додаток у dev-режимі з автоматичним перезапуском при зміні коду.
 
-## Приклади запитів
+### HTTP-запити (через `curl`)
 
-### Реєстрація
+#### Реєстрація користувача
 
 ```bash
 curl -X POST http://localhost:3000/auth/register \
@@ -201,7 +214,7 @@ curl -X POST http://localhost:3000/auth/register \
   -d '{"username": "john", "password": "secret"}'
 ```
 
-### Вхід
+#### Вхід (отримання пари токенів)
 
 ```bash
 curl -X POST http://localhost:3000/auth/login \
@@ -209,19 +222,45 @@ curl -X POST http://localhost:3000/auth/login \
   -d '{"username": "john", "password": "secret"}'
 ```
 
-Відповідь:
+Очікувана відповідь:
+
 ```json
-{ "access_token": "<JWT_TOKEN>" }
+{ "accessToken": "<ACCESS_JWT>", "refreshToken": "<REFRESH_JWT>" }
 ```
 
-### Захищений маршрут
+#### Оновлення токенів (`/auth/refresh`)
+
+```bash
+curl -X POST http://localhost:3000/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken": "<REFRESH_JWT>"}'
+```
+
+Повертає нову пару `accessToken` / `refreshToken`, а старий refresh позначається заблокованим у БД.
+
+#### Logout (`/auth/logout`)
+
+```bash
+curl -X POST http://localhost:3000/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken": "<REFRESH_JWT>"}'
+```
+
+Позначає переданий refresh-токен як заблокований. Після цього він не може бути використаний для оновлення сесії.
+
+#### Захищений маршрут `/auth/profile`
 
 ```bash
 curl http://localhost:3000/auth/profile \
-  -H "Authorization: Bearer <JWT_TOKEN>"
+  -H "Authorization: Bearer <ACCESS_JWT>"
 ```
 
-Відповідь:
-```json
-{ "userId": 1, "username": "john" }
-```
+При валідному access-токені повертає payload користувача.
+
+---
+
+## Коротко про поточну реалізацію
+
+- **Access-токен** живе відносно недовго і використовується для кожного запиту.
+- **Refresh-токен** живе довше, зберігається в таблиці `Token`, має унікальний `jti` і може бути заблокований.
+- **Logout/refresh** працюють не просто на рівні "забути токен на клієнті", а фізично блокують запис у БД, тому старі токени стають недійсними.

@@ -7,6 +7,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from './entities/user.entity';
 import { JwtStrategy } from './jwt.strategy';
+import { Token } from './entities/token.entity';
 
 @Module({
   imports: [
@@ -14,19 +15,12 @@ import { JwtStrategy } from './jwt.strategy';
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => {
-        const expiration = configService.get<number>('JWT_EXPIRATION_TIME');
-
-        if (!expiration) throw new Error('JWT_EXPIRATION_TIME is not defined');
-
-        return {
-          secret: configService.get<string>('JWT_SECRET'),
-          signOptions: { expiresIn: `${expiration}s` },
-        };
-      },
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.get<string>('JWT_SECRET'),
+      }),
       inject: [ConfigService],
     }),
-    TypeOrmModule.forFeature([User]),
+    TypeOrmModule.forFeature([User, Token]),
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],
