@@ -1,266 +1,256 @@
-# NestJS — JWT авторизація з refresh/logout та зберіганням токенів у БД
+## NestJS — конфіг `.env`, TypeORM та міграції
+
+Ця гілка налаштована під **роботу з конфігом через сервіс `EnvService`** та **керування базою даних через міграції TypeORM** замість `synchronize: true`.
+
+---
 
 ## Що було зроблено в цій гілці
 
-- **Додано повноцінну підтримку пари access/refresh токенів**
-- **Додано сутність `Token` та звʼязок `User` ⇄ `Token` у БД**
-- **Реалізовано маршрути `POST /auth/refresh` та `POST /auth/logout`**
-- **JWT-стратегія тепер перевіряє токен по `jti` у таблиці `Token` і враховує блокування**
-- **Час життя токенів керується через змінні оточення, а не через конфіг `JwtModule`**
+- **Винесено роботу з `.env` в окремий сервіс `EnvService`**
+  - Один централізований сервіс для читання JWT та DB-конфігів.
+  - Значення беруться з `ConfigService` (`@nestjs/config`) з дефолтами на випадок відсутності змінних.
+
+- **Створено `SharedModule`**
+  - Інкапсулює `EnvService`.
+  - Експортує `EnvService`, щоб ним можна було користуватися в інших модулях (наприклад, у TypeORM-конфігурації).
+
+- **Переведено `TypeOrmModule` на асинхронну конфігурацію через `EnvService`**
+  - Раніше `TypeOrmModule.forRoot` мав хардкод: хост, порт, логін/пароль, назву БД, `synchronize: true`.
+  - Тепер використовується `TypeOrmModule.forRootAsync`:
+    - Підтягує `EnvService` з `SharedModule`.
+    - Бере всі параметри підключення до БД з `.env`.
+    - Вимкнено `synchronize`, замість цього використовується механіка міграцій.
+
+- **Підключено `SharedModule` в `AppModule`**
+  - Щоб `EnvService` був доступний глобально (для TypeORM та інших частин застосунку).
+
+- **Додано окремий `ormconfig.ts` з `DataSource` для CLI TypeORM**
+  - Створює `DataSource` на базі `EnvService`.
+  - Використовується CLI-утилітами TypeORM для генерації/запуску/відкату міграцій.
+
+- **Створено першу міграцію `1773687082714-first.ts`**
+  - Створює таблиці:
+    - `table` — прикладова таблиця з полями `type`, `width`, `height`, `inStock`.
+    - `user` — користувачі з унікальним `username`.
+    - `token` — токени авторизації (access/refresh + звʼязок з `user`).
+  - Налаштовує foreign key `token.userId → user.id`.
+  - Передбачено коректний `down` (видалення foreign key, індексу та таблиць).
+
+- **Оновлено `package.json` під роботу з міграціями**
+  - Додано скрипт для запуску TypeORM CLI.
+  - Додано скрипти для генерації, запуску та відкату міграцій.
+  - Додано dev-залежність `cross-var` для кросплатформенної підтримки змінних середовища в npm-скриптах.
 
 ---
 
-## Встановлені залежності
+## Деталі по основних файлах
 
-```bash
-npm install @nestjs/config @nestjs/jwt @nestjs/passport passport passport-jwt bcrypt
-npm install -D @types/passport-jwt @types/bcrypt
-```
+### `src/shared/services/env.service.ts`
 
-- **`@nestjs/config`**: робота зі змінними оточення, `.env`
-- **`@nestjs/jwt`**: створення та верифікація JWT
-- **`@nestjs/passport` / `passport` / `passport-jwt`**: інтеграція Passport + JWT стратегія
-- **`bcrypt`**: хешування паролів
-- **`@types/*`**: typings для TypeScript
+- **Призначення**: єдиний сервіс для читання всіх важливих змінних оточення.
+- Зберігає в собі:
+  - **JWT-конфіг**:
+    - `jwtSecret`
+    - `accessTokenExpirationTime`
+    - `refreshTokenExpirationTime`
+  - **DB-конфіг**:
+    - `dbType`
+    - `dbHost`
+    - `dbPort`
+    - `dbUsername`
+    - `dbPassword`
+    - `dbDatabase`
+- Значення читаються через `ConfigService` з дефолтами, щоб локально все працювало "з коробки", навіть без `.env`.
 
----
+### `src/shared/shared.module.ts`
 
-## Структура модуля авторизації (оновлена)
+- **Призначення**: модуль-обгортка для спільних сервісів.
+- Містить:
+  - `imports: [ConfigModule]`
+  - `providers: [EnvService]`
+  - `exports: [EnvService]`
+- Дозволяє іншим модулям просто імпортувати `SharedModule` і отримувати `EnvService` через DI.
 
-```text
-src/
-├── app.module.ts
-├── auth/
-│   ├── auth.controller.ts                 ← маршрути: register, login, profile, refresh, logout
-│   ├── auth.module.ts                     ← JwtModule без expiresIn, репозиторії User + Token
-│   ├── auth.service.ts                    ← робота з access/refresh токенами, logout
-│   ├── jwt.strategy.ts                    ← перевірка токена по jti в БД
-│   ├── dto/
-│   │   ├── register.dto.ts
-│   │   ├── login.dto.ts
-│   │   └── refresh-token.dto.ts           ← DTO для refresh/logout
-│   ├── entities/
-│   │   ├── user.entity.ts                 ← User + звʼязок one-to-many з Token
-│   │   └── token.entity.ts                ← сутність токенів
-│   └── interfaces/
-│       └── tokens.interface.ts            ← інтерфейс для пари токенів
-└── tables/
-    └── interfaces/
-        ├── jwt-payload.interface.ts       ← payload з додатковим полем jti
-        └── user-request.interface.ts
-```
+### `src/typeorm.module.ts`
 
----
+- Раніше:
+  - Використовувався `TypeOrmModule.forRoot` з хардкодом:
+    - `host: 'localhost'`, `port: 3307`, `username: 'user'`, `password: 'user'`, `database: 'my-nestjs-test'`.
+    - `synchronize: true`.
+- Тепер:
+  - Використовується `TypeOrmModule.forRootAsync`.
+  - Імпортується `SharedModule`.
+  - У `useFactory` передається `EnvService`, з якого беруться всі параметри:
+    - `type`, `host`, `port`, `username`, `password`, `database`.
+  - Додано:
+    - `migrations: [__dirname + '/migrations/*{.ts,.js}']`
+    - `entities: [__dirname + '/**/*.entity{.ts,.js}']`
+    - `synchronize: false`
 
-## Зміни по файлах
+### `ormconfig.ts`
 
-### `src/auth/auth.controller.ts`
+- Окремий конфіг для TypeORM CLI у вигляді `DataSource`.
+- Використовує:
+  - `ConfigService` з `@nestjs/config`.
+  - `EnvService` для отримання параметрів підключення до БД.
+- Налаштовує:
+  - тип БД (очікувано `mysql`);
+  - хост, порт, логін/пароль, назву БД;
+  - шляхи до міграцій: `src/migrations/*{.ts,.js}`;
+  - шляхи до сутностей: `**/*.entity{.ts,.js}`;
+  - `synchronize: false`.
+- Використовується всіма CLI-командами TypeORM через прапорець `--dataSource ./ormconfig.ts`.
 
-- Додано імпорт `RefreshTokenDto`.
-- Додано маршрути:
-  - `POST /auth/refresh` — приймає `refreshToken`, повертає оновлену пару токенів.
-  - `POST /auth/logout` — блокує переданий `refreshToken` у БД (користувач виходить з системи).
+### `src/migrations/1773687082714-first.ts`
 
-### `src/auth/auth.module.ts`
+- **Up (`up`):**
+  - Створює таблицю `table` з полями:
+    - `id` (PK, автоінкремент),
+    - `type` (varchar),
+    - `width` (int),
+    - `height` (int),
+    - `inStock` (boolean/tinyint, за замовчуванням `1`).
+  - Створює таблицю `token` з полями для зберігання JWT-токенів:
+    - `accessToken`, `refreshToken`,
+    - часи експірації для обох токенів,
+    - прапорець `isBlocked`,
+    - `jti`,
+    - `userId` (nullable FK на `user`).
+  - Створює таблицю `user`:
+    - `id` (PK),
+    - `username` (унікальний),
+    - `password`.
+  - Додає foreign key `token.userId → user.id`.
 
-- `JwtModule.registerAsync` тепер налаштовується тільки з `secret`:
-  - час життя токенів більше НЕ задається тут, а передається при `jwtService.sign(...)` у сервісі.
-- `TypeOrmModule.forFeature([User, Token])` — підключено репозиторій `Token` разом з `User`.
-
-### `src/auth/auth.service.ts`
-
-- Додано інʼєкцію:
-  - репозиторію `Token`;
-  - `ConfigService`.
-- Додано приватні поля:
-  - `accessTokenExpiresIn` — читається з `ACCESS_TOKEN_EXPIRATION_TIME`;
-  - `refreshTokenExpiresIn` — читається з `REFRESH_TOKEN_EXPIRATION_TIME`.
-- **Метод `login` тепер повертає `ITokens`**:
-  - генерується випадковий `jti`;
-  - підписуються `accessToken` і `refreshToken` з різними `expiresIn`;
-  - обидва токени зберігаються в таблиці `Token` через приватний метод `saveTokens(...)` разом з датами закінчення, `jti` і користувачем.
-- **Новий метод `refresh`**:
-  - читає `refreshToken` з `RefreshTokenDto`;
-  - валідує JWT через `jwtService.verify<IJWTPayload>(refreshToken)`;
-  - шукає в БД запис `Token` з цим refresh-токеном, `isBlocked = false` та повʼязаним користувачем;
-  - перевіряє, чи `refreshTokenExpiresAt` ще не минув;
-  - блокує старий запис (`isBlocked = true`);
-  - генерує нову пару access/refresh з новим `jti`, зберігає їх у БД та повертає.
-- **Новий метод `logOut`**:
-  - шукає запис `Token` по значенню `refreshToken`;
-  - якщо знайшов — ставить `isBlocked = true` і зберігає, таким чином розлогінюючи сесію.
-
-### `src/auth/dto/refresh-token.dto.ts`
-
-- Новий DTO для refresh/logout:
-
-```typescript
-export class RefreshTokenDto {
-  @IsString()
-  refreshToken: string;
-}
-```
-
-### `src/auth/entities/token.entity.ts`
-
-- Нова сутність `Token` з полями:
-  - `accessToken: string`;
-  - `refreshToken: string`;
-  - `accessTokenExpiresAt: Date`;
-  - `refreshTokenExpiresAt: Date`;
-  - `isBlocked: boolean` (default `false`);
-  - `jti: string`;
-  - `user: User` — звʼязок `ManyToOne` на користувача.
-
-### `src/auth/entities/user.entity.ts`
-
-- До існуючої логіки (хешування пароля через `@BeforeInsert` і `validatePassword`) додано:
-
-```typescript
-@OneToMany(() => Token, (token) => token.user)
-tokens: Token[];
-```
-
-Це дозволяє зберігати і переглядати всі токени, видані користувачу.
-
-### `src/auth/interfaces/tokens.interface.ts`
-
-- Новий інтерфейс результату логіну/refresh:
-
-```typescript
-export interface ITokens {
-  accessToken: string;
-  refreshToken: string;
-}
-```
-
-### `src/auth/jwt.strategy.ts`
-
-- Додано інʼєкцію репозиторію `Token`.
-- У методі `validate`:
-  - по `payload.jti` шукається запис у таблиці `Token` з `isBlocked = false`;
-  - якщо запис не знайдено — кидається `UnauthorizedException('Token is blocked or invalid')`;
-  - при успіху повертається payload (користувач вважається авторизованим).
-
-Таким чином, якщо токен заблокований (logout/refresh), запити з ним більше не пройдуть перевірку в стратегії.
-
-### `src/tables/interfaces/jwt-payload.interface.ts`
-
-- Оновлений payload JWT тепер має вигляд:
-
-```typescript
-export interface IJWTPayload {
-  userId: number;
-  username: string;
-  jti: string;
-}
-```
+- **Down (`down`):**
+  - При відкаті:
+    - видаляє foreign key;
+    - знімає унікальний індекс з `user.username`;
+    - видаляє таблиці `user`, `token`, `table`.
 
 ---
 
 ## Змінні оточення (`.env`)
 
-Актуальний мінімальний набір для авторизації:
+Мінімальний набір змінних для коректної роботи:
 
 ```env
 JWT_SECRET=<ваш_секретний_ключ>
-ACCESS_TOKEN_EXPIRATION_TIME=900          # 15 хвилин, приклад
-REFRESH_TOKEN_EXPIRATION_TIME=2592000     # 30 днів, приклад
+ACCESS_TOKEN_EXPIRATION_TIME=900          # час життя access-токена в секундах
+REFRESH_TOKEN_EXPIRATION_TIME=2592000     # час життя refresh-токена в секундах
+
+DB_TYPE=mysql
+DB_HOST=localhost
+DB_PORT=3307
+DB_USERNAME=user
+DB_PASSWORD=user
+DB_DATABASE=my-nestjs-test
 ```
 
-- **`JWT_SECRET`** — секрет для підпису JWT.
-- **`ACCESS_TOKEN_EXPIRATION_TIME`** — час життя access-токена в секундах.
-- **`REFRESH_TOKEN_EXPIRATION_TIME`** — час життя refresh-токена в секундах.
+- **`JWT_SECRET`**: секрет для підпису JWT.
+- **`ACCESS_TOKEN_EXPIRATION_TIME` / `REFRESH_TOKEN_EXPIRATION_TIME`**: тривалість життя access/refresh токенів.
+- **`DB_*` змінні**: параметри підключення до MySQL.
 
 ---
 
 ## Команди, які використовуються в проєкті
 
-### База даних (MySQL через Docker)
+### Залежності та запуск
 
-```bash
-docker-compose up -d
-```
-
-- Підіймає контейнер MySQL 8 у фоні з параметрами:
-  - БД: `my-nestjs-test`;
-  - користувач: `user` / пароль `user`;
-  - root-пароль: `superpass`;
-  - порт: `3307:3306`.
-
-### Встановлення залежностей
+- **Встановлення залежностей**
 
 ```bash
 npm install
 ```
 
-- Встановлює всі npm-залежності проєкту.
-
-### Запуск застосунку в режимі розробки
+- **Запуск застосунку в режимі розробки**
 
 ```bash
 npm run start:dev
 ```
 
-- Запускає NestJS-додаток у dev-режимі з автоматичним перезапуском при зміні коду.
+### База даних (Docker + MySQL)
 
-### HTTP-запити (через `curl`)
-
-#### Реєстрація користувача
+- **Запуск MySQL через Docker Compose**
 
 ```bash
-curl -X POST http://localhost:3000/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username": "john", "password": "secret"}'
+docker-compose up -d
 ```
 
-#### Вхід (отримання пари токенів)
+Підіймає контейнер MySQL 8 у фоні з параметрами (як у попередній конфігурації проєкту):
+- БД: `my-nestjs-test`
+- користувач: `user` / пароль `user`
+- root-пароль: `superpass`
+- порт: `3307:3306`
+
+### TypeORM CLI та міграції
+
+- **Базова команда TypeORM CLI (через npm-скрипт)**
 
 ```bash
-curl -X POST http://localhost:3000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "john", "password": "secret"}'
+npm run typeorm -- <subcommand>
 ```
 
-Очікувана відповідь:
+Виконує `./node_modules/typeorm/cli.js`, підключаючи `ts-node` і `tsconfig-paths`. Далі можна використовувати стандартні сабкоманди TypeORM.
 
-```json
-{ "accessToken": "<ACCESS_JWT>", "refreshToken": "<REFRESH_JWT>" }
-```
-
-#### Оновлення токенів (`/auth/refresh`)
+- **Генерація нової міграції**
 
 ```bash
-curl -X POST http://localhost:3000/auth/refresh \
-  -H "Content-Type: application/json" \
-  -d '{"refreshToken": "<REFRESH_JWT>"}'
+npm run migration:generate --name=<ІМʼЯ_МІГРАЦІЇ>
 ```
 
-Повертає нову пару `accessToken` / `refreshToken`, а старий refresh позначається заблокованим у БД.
+Що відбувається:
+- Скрипт `migration:generate` використовує `cross-var` і змінну `npm_config_name`, яку npm передає з `--name=...`.
+- Викликається:
+  - `npm run typeorm -- migration:generate --dataSource ./ormconfig.ts src/migrations/$npm_config_name`
+- У результаті в `src/migrations/` створюється новий файл міграції з імʼям на основі переданого `--name`.
 
-#### Logout (`/auth/logout`)
+- **Запуск усіх pending-міграцій**
 
 ```bash
-curl -X POST http://localhost:3000/auth/logout \
-  -H "Content-Type: application/json" \
-  -d '{"refreshToken": "<REFRESH_JWT>"}'
+npm run migration:run
 ```
 
-Позначає переданий refresh-токен як заблокований. Після цього він не може бути використаний для оновлення сесії.
+Що робить:
+- Викликає `npm run typeorm -- migration:run --dataSource ./ormconfig.ts`.
+- Виконує всі міграції, які ще не були застосовані до поточної БД.
 
-#### Захищений маршрут `/auth/profile`
+- **Відкат останньої виконаної міграції**
 
 ```bash
-curl http://localhost:3000/auth/profile \
-  -H "Authorization: Bearer <ACCESS_JWT>"
+npm run migration:revert
 ```
 
-При валідному access-токені повертає payload користувача.
+Що робить:
+- Викликає `npm run typeorm -- migration:revert --dataSource ./ormconfig.ts`.
+- Відкочує останню застосовану міграцію (викликає метод `down` останнього файлу міграції).
+
+### Інші корисні команди (git, службові)
+
+Ці команди використовувалися у процесі роботи з гілкою для перевірки стану проєкту та змін:
+
+- **Перевірка статусу git**
+
+```bash
+git status
+```
+
+Показує поточний стан репозиторію: які файли змінені, додані, не відстежуються тощо.
+
+- **Перегляд відмінностей у файлах**
+
+```bash
+git diff
+```
+
+Виводить різницю між поточними зміненими файлами та останнім закоміченим станом.
 
 ---
 
-## Коротко про поточну реалізацію
+## Коротко про поточну конфігурацію
 
-- **Access-токен** живе відносно недовго і використовується для кожного запиту.
-- **Refresh-токен** живе довше, зберігається в таблиці `Token`, має унікальний `jti` і може бути заблокований.
-- **Logout/refresh** працюють не просто на рівні "забути токен на клієнті", а фізично блокують запис у БД, тому старі токени стають недійсними.
+- **Конфігурація оточення** централізована в `EnvService` і використовується як у JWT-логіці, так і в підключенні до БД.
+- **TypeORM** більше не працює в режимі `synchronize: true`, замість цього застосовуються **міграції**.
+- **Міграції** описують структуру таблиць `user`, `token` і `table`, а також всі потрібні ключі та індекси.
+- **NPM-скрипти** спрощують генерацію/запуск/відкат міграцій і роблять налаштування кросплатформенним за рахунок `cross-var`.
+
