@@ -31,8 +31,8 @@ export class EnvService {
     this.dbType = configService.get<string>('DB_TYPE', 'mysql');
     this.dbHost = configService.get<string>('DB_HOST', 'localhost');
     this.dbPort = configService.get<number>('DB_PORT', 3307);
-    this.dbUsername = configService.get<string>('DB_USERNAME', 'user');
-    this.dbPassword = configService.get<string>('DB_PASSWORD', 'user');
+    this.dbUsername = configService.get<string>('DB_USERNAME', '');
+    this.dbPassword = configService.get<string>('DB_PASSWORD', '');
     this.dbDatabase = configService.get<string>(
       'DB_DATABASE',
       'my-nestjs-test',

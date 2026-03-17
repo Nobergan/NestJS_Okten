@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { ConfigService } from '@nestjs/config';
 import { EnvService } from './src/shared/services/env.service';
 import { DataSource } from 'typeorm';
